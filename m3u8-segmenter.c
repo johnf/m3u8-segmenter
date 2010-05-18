@@ -37,7 +37,7 @@ struct options_t {
 
 void handler(int signum);
 static AVStream *add_output_stream(AVFormatContext *output_format_context, AVStream *input_stream);
-int write_index_file(const struct options_t, const unsigned int first_segment, const unsigned int last_segment, const int end);
+int write_index_file(const struct options_t, const unsigned int first_segment, const unsigned int last_segment, const int end, const unsigned int actual_segment_durations[]);
 void display_usage(void);
 
 
@@ -107,7 +107,7 @@ static AVStream *add_output_stream(AVFormatContext *output_format_context, AVStr
     return output_stream;
 }
 
-int write_index_file(const struct options_t options, const unsigned int first_segment, const unsigned int last_segment, const int end) {
+int write_index_file(const struct options_t options, const unsigned int first_segment, const unsigned int last_segment, const int end, const unsigned int actual_segment_durations[]) {
     FILE *index_fp;
     char *write_buf;
     unsigned int i;
@@ -139,7 +139,7 @@ int write_index_file(const struct options_t options, const unsigned int first_se
     }
 
     for (i = first_segment; i <= last_segment; i++) {
-        snprintf(write_buf, 1024, "#EXTINF:%lu,\n%s%s-%u.ts\n", options.segment_duration, options.url_prefix, options.output_prefix, i);
+        snprintf(write_buf, 1024, "#EXTINF:%u,\n%s%s-%u.ts\n", actual_segment_durations[i-1], options.url_prefix, options.output_prefix, i);
         if (fwrite(write_buf, strlen(write_buf), 1, index_fp) != 1) {
             fprintf(stderr, "Could not write to m3u8 index file, will not continue writing to index file\n");
             free(write_buf);
@@ -407,7 +407,8 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    write_index = !write_index_file(options, first_segment, last_segment, 0);
+    unsigned int *actual_segment_durations = malloc(sizeof(unsigned int) * 1024);
+    write_index = !write_index_file(options, first_segment, last_segment, 0, actual_segment_durations);
 
     /* Setup signals */
     memset(&act, 0, sizeof(act));
@@ -417,6 +418,7 @@ int main(int argc, char **argv)
     sigaction(SIGTERM, &act, NULL);
 
     do {
+        unsigned int current_segment_duration;
         double segment_time;
         AVPacket packet;
 
@@ -445,6 +447,8 @@ int main(int argc, char **argv)
             segment_time = prev_segment_time;
         }
 
+        current_segment_duration = (int) round(segment_time - prev_segment_time);
+        actual_segment_durations[last_segment] = (current_segment_duration > 0 ? current_segment_duration: 1);
         if (segment_time - prev_segment_time >= options.segment_duration) {
             put_flush_packet(oc->pb);
             url_fclose(oc->pb);
@@ -458,7 +462,7 @@ int main(int argc, char **argv)
             }
 
             if (write_index) {
-                write_index = !write_index_file(options, first_segment, ++last_segment, 0);
+                write_index = !write_index_file(options, first_segment, ++last_segment, 0, actual_segment_durations);
             }
 
             if (remove_file) {
@@ -517,13 +521,15 @@ int main(int argc, char **argv)
     }
 
     if (write_index) {
-        write_index_file(options, first_segment, ++last_segment, 1);
+        write_index_file(options, first_segment, ++last_segment, 1, actual_segment_durations);
     }
 
     if (remove_file) {
         snprintf(remove_filename, strlen(options.output_prefix) + 15, "%s-%u.ts", options.output_prefix, first_segment - 1);
         remove(remove_filename);
     }
+
+    free(actual_segment_durations);
 
     return 0;
 }
