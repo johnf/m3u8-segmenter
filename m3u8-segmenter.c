@@ -357,6 +357,9 @@ int main(int argc, char **argv)
     }
     oc->oformat = ofmt;
 
+    // Don't print warnings when PTS and DTS are identical.
+    ic->flags |= AVFMT_FLAG_IGNDTS;
+
     video_index = -1;
     audio_index = -1;
 
