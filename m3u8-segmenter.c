@@ -357,6 +357,9 @@ int main(int argc, char **argv)
     }
     oc->oformat = ofmt;
 
+    // Don't print warnings when PTS and DTS are identical.
+    ic->flags |= AVFMT_FLAG_IGNDTS;
+
     video_index = -1;
     audio_index = -1;
 
@@ -396,6 +399,12 @@ int main(int argc, char **argv)
       }
     }
 
+    if (video_st->codec->ticks_per_frame > 1) {
+        // h264 sets the ticks_per_frame and time_base.den but not time_base.num
+        // since we don't use ticks_per_frame, adjust time_base.num accordingly.
+        video_st->codec->time_base.num *= video_st->codec->ticks_per_frame;
+    }
+
     snprintf(output_filename, strlen(options.output_prefix) + 15, "%s-%u.ts", options.output_prefix, output_index++);
     if (url_fopen(&oc->pb, output_filename, URL_WRONLY) < 0) {
         fprintf(stderr, "Could not open '%s'\n", output_filename);
@@ -416,6 +425,10 @@ int main(int argc, char **argv)
     sigaction(SIGINT, &act, NULL);
     sigaction(SIGTERM, &act, NULL);
 
+    // Track initial PTS values so we can subtract them out (removing aduio/video delay, since they seem incorrect).
+    int64_t initial_audio_pts = -1;
+    int64_t initial_video_pts = -1;
+
     do {
         double segment_time;
         AVPacket packet;
@@ -435,13 +448,21 @@ int main(int argc, char **argv)
             break;
         }
 
-        if (packet.stream_index == video_index && (packet.flags & PKT_FLAG_KEY)) {
-            segment_time = (double)video_st->pts.val * video_st->time_base.num / video_st->time_base.den;
-        }
-        else if (video_index < 0) {
-            segment_time = (double)audio_st->pts.val * audio_st->time_base.num / audio_st->time_base.den;
-        }
-        else {
+        if (packet.stream_index == video_index) {
+            if (initial_video_pts < 0) initial_video_pts = packet.pts;
+            packet.pts -= initial_video_pts;
+            packet.dts = packet.pts;
+            if (packet.flags & AV_PKT_FLAG_KEY) {
+                segment_time = (double)packet.pts * video_st->time_base.num / video_st->time_base.den;
+            } else {
+                segment_time = prev_segment_time;
+            }
+        } else if (packet.stream_index == audio_index) {
+            if (initial_audio_pts < 0) initial_audio_pts = packet.pts;
+            packet.pts -= initial_audio_pts;
+            packet.dts = packet.pts;
+             segment_time = prev_segment_time;
+        } else {
             segment_time = prev_segment_time;
         }
 
@@ -481,7 +502,7 @@ int main(int argc, char **argv)
             prev_segment_time = segment_time;
         }
 
-        ret = av_interleaved_write_frame(oc, &packet);
+        ret = av_write_frame(oc, &packet);
         if (ret < 0) {
             fprintf(stderr, "Warning: Could not write frame of stream\n");
         }
