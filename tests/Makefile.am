@@ -1,3 +1,4 @@
+AUTOMAKE_OPTIONS = -Wno-portability
 EXTRA_DIST = Hydrate-Kenny_Beltrey.oga big_buck_bunny.ogv test1.m3u8  test2.m3u8
 
 tests: libav ffmpeg
