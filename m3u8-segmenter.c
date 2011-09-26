@@ -45,7 +45,7 @@ void display_usage(void);
 int terminate = 0;
 
 
-void handler(int signum) {
+void handler(__attribute((__unused__)) int signum) {
     signum = 0;
     terminate = 1;
 }
