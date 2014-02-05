@@ -21,6 +21,7 @@
 #include <sys/types.h>
 #include <signal.h>
 #include <getopt.h>
+#include <glob.h>
 
 #include <libavformat/avformat.h>
 #include "libav-compat.h"
@@ -39,6 +40,7 @@ struct options_t {
 void handler(int signum);
 static AVStream *add_output_stream(AVFormatContext *output_format_context, AVStream *input_stream);
 int write_index_file(const struct options_t, const unsigned int first_segment, const unsigned int last_segment, const int end);
+int get_last_chunk(const char *base_path);
 void display_usage(void);
 
 
@@ -107,6 +109,35 @@ static AVStream *add_output_stream(AVFormatContext *output_format_context, AVStr
     }
 
     return output_stream;
+}
+
+int get_last_chunk(const char *base_path)
+{
+    glob_t globbuf;
+    char *result = malloc(strlen(base_path) + 5);
+    char *path = malloc(strlen(base_path));
+    char *s;
+    char *r;
+    unsigned int i = 0;
+    int last = 1;
+    strcpy( path, base_path);
+    result = strcat(path, "*.ts");
+    glob(result, GLOB_TILDE, NULL, &globbuf);
+
+    for(i=0; i < globbuf.gl_pathc; ++i ) {
+        s = strrchr (globbuf.gl_pathv[i], '-');
+        if (s != NULL) {
+            r=strndup(s+1, strlen(s)-4);
+            if (atoi(r) > last) {
+                last = atoi(r);
+            }
+        }
+    }
+
+    if( globbuf.gl_pathc > 0 )
+        globfree( &globbuf );
+
+    return last;
 }
 
 int write_index_file(const struct options_t options, const unsigned int first_segment, const unsigned int last_segment, const int end) {
@@ -179,6 +210,7 @@ void display_usage(void)
     printf("\t-m, --m3u8-file FILE         M3U8 output filename\n");
     printf("\t-u, --url-prefix PREFIX      Prefix for web address of segments, e.g. http://example.org/video/\n");
     printf("\t-n, --num-segment NUMBER     Number of segments to keep on disk\n");
+    printf("\t-r, --resume=[NUMBER]        Number of segment to continue from. If none is given, it takes the last available part.\n");
     printf("\t-h, --help                   This help\n");
     printf("\n");
     printf("\n");
@@ -201,6 +233,8 @@ int main(int argc, char **argv)
     char *remove_filename;
     int video_index = -1;
     int audio_index = -1;
+    int last_chunk = 0;
+    int resume = 0;
     unsigned int first_segment = 1;
     unsigned int last_segment = 0;
     int write_index = 1;
@@ -216,7 +250,7 @@ int main(int argc, char **argv)
     char *endptr;
     struct options_t options;
 
-    static const char *optstring = "i:d:p:m:u:n:ovh?";
+    static const char *optstring = "i:d:p:m:u:r::n:ovh?";
 
     static const struct option longopts[] = {
         { "input",         required_argument, NULL, 'i' },
@@ -224,6 +258,7 @@ int main(int argc, char **argv)
         { "output-prefix", required_argument, NULL, 'p' },
         { "m3u8-file",     required_argument, NULL, 'm' },
         { "url-prefix",    required_argument, NULL, 'u' },
+        { "resume",        optional_argument, NULL, 'r' },
         { "num-segments",  required_argument, NULL, 'n' },
         { "help",          no_argument,       NULL, 'h' },
         { 0, 0, 0, 0 }
@@ -264,6 +299,14 @@ int main(int argc, char **argv)
 
             case 'u':
                 options.url_prefix = optarg;
+                break;
+
+            case 'r':
+                if (optarg && strtol(optarg, &endptr, 10)) {
+                    resume = strtol(optarg, &endptr, 10);
+                } else {
+                    resume = -1;
+                }
                 break;
 
             case 'n':
@@ -319,6 +362,18 @@ int main(int argc, char **argv)
     if (!options.tmp_m3u8_file) {
         fprintf(stderr, "Could not allocate space for temporary index filename\n");
         exit(1);
+    }
+
+    //check if we want to continue an existing stream
+    if (resume != 0) {
+        if (resume == -1) {
+            last_chunk = get_last_chunk(options.output_prefix);
+        } else {
+            last_chunk = resume;
+        }
+
+        last_segment = last_chunk - 1;
+        output_index = last_chunk;
     }
 
     // Use a dotfile as a temporary file
